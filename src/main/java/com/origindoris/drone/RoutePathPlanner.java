@@ -198,6 +198,9 @@ public class RoutePathPlanner {
             if (waypointDensity > expectedDensity * 1.5) {
                 validatedRoute = validateWaypointSpacing(optimizedRoute, new ArrayList<>(), pointSpacing);
             }
+            
+            // 新增：航点优化 - 合并同一直线上的冗余航点
+//            List<LatLngPoint> finalOptimizedRoute = optimizeWaypoints(validatedRoute);
 
             // 计算总距离
             double totalDistance = calculateTotalDistance(validatedRoute);
@@ -235,7 +238,8 @@ public class RoutePathPlanner {
                                                           double photoWidth,
                                                           double photoLength,
                                                           double flightHeight,
-                                                          int maxBlocks) {
+                                                          int maxBlocks,
+                                                          boolean optimize) {
 
 
         List<LatLngPoint> allWaypoints = new ArrayList<>();
@@ -306,6 +310,11 @@ public class RoutePathPlanner {
 
         // 最终清理：确保所有航点和航线都在多边形内
         List<LatLngPoint> finalCleanedWaypoints = cleanupInvalidConnections(allWaypoints, polygonPoints);
+
+        if (optimize) {
+            // 新增：航点优化 - 合并同一直线上的冗余航点
+            finalCleanedWaypoints = optimizeWaypoints(finalCleanedWaypoints);
+        }
 
         return new RouteResult(finalCleanedWaypoints, totalDistance, totalLines);
     }
@@ -426,6 +435,24 @@ public class RoutePathPlanner {
         
         // GSD = (传感器宽度 × 飞行高度) / (焦距 × 图像宽度)
         return (sensorWidth * height) / (focalLength * imageWidth);
+    }
+    /**
+     * 根据地面采样距离(GSD)计算飞行高度
+     * 使用反向GSD公式：高度 = (GSD × 焦距 × 图像宽度) / 传感器宽度
+     *
+     * @param gsd 地面采样距离（米）
+     * @param sensorWidth 传感器宽度（毫米）
+     * @param focalLength 焦距（毫米）
+     * @param imageWidth 图像宽度（像素）
+     * @return 飞行高度（米）
+     */
+    public static double calculateHeightFromGSD(double gsd, double sensorWidth, double focalLength, int imageWidth) {
+        if (gsd <= 0 || sensorWidth <= 0 || focalLength <= 0 || imageWidth <= 0) {
+            throw new IllegalArgumentException("GSD、传感器宽度、焦距和图像宽度必须大于0");
+        }
+
+        // 高度 = (GSD × 焦距 × 图像宽度) / 传感器宽度
+        return (gsd * focalLength * imageWidth) / sensorWidth;
     }
     
     /**
@@ -2631,14 +2658,185 @@ public class RoutePathPlanner {
     }
 
 
+    /**
+     * 优化航点序列：合并同一直线上的冗余航点，正确处理航线转弯
+     * 时间复杂度：O(n)
+     * 
+     * @param waypoints 原始航点序列
+     * @param toleranceAngle 角度容差（度），用于判断是否为同一直线，默认2度
+     * @param minSegmentLength 最小线段长度（米），短于此长度的线段不进行优化
+     * @return 优化后的航点序列
+     */
+    public static List<LatLngPoint> optimizeWaypoints(List<LatLngPoint> waypoints, double toleranceAngle, double minSegmentLength) {
+        if (waypoints == null || waypoints.size() <= 2) {
+            return new ArrayList<>(waypoints);
+        }
+        
+        List<LatLngPoint> optimized = new ArrayList<>();
+        optimized.add(waypoints.get(0)); // 添加起始点
+        
+        int segmentStart = 0;
+        
+        for (int i = 1; i < waypoints.size() - 1; i++) {
+            LatLngPoint current = waypoints.get(i);
+            LatLngPoint next = waypoints.get(i + 1);
+            
+            // 检查是否为真正的航线转弯点
+            boolean isTurningPoint = false;
+            
+            if (i >= 1) {
+                LatLngPoint prev = waypoints.get(i - 1);
+                
+                // 计算当前段和下一段的方向
+                double bearing1 = calculateBearing(prev, current);
+                double bearing2 = calculateBearing(current, next);
+                
+                // 计算方向变化
+                double angleChange = calculateAngleDifference(bearing1, bearing2);
+                
+                // 只有当角度变化超过较大阈值时才认为是转弯点
+                if (angleChange > toleranceAngle * 5) { // 提高阈值到5倍容差
+                    isTurningPoint = true;
+                }
+                
+                // 额外检查：距离突然增大的情况（跨航线连接）
+                if (i >= 2) {
+                    double dist1 = calculateDistance(waypoints.get(i-2), waypoints.get(i-1));
+                    double dist2 = calculateDistance(waypoints.get(i-1), current);
+                    double dist3 = calculateDistance(current, next);
+                    
+                    // 如果当前距离明显大于前后距离，说明是跨航线连接
+                    if (dist2 > Math.max(dist1, dist3) * 3.0) {
+                        isTurningPoint = true;
+                    }
+                }
+            }
+            
+            // 如果是转弯点，结束当前线段并开始新线段
+            if (isTurningPoint) {
+                // 只添加转弯点，不添加额外的中间点
+                optimized.add(current);
+                segmentStart = i;
+            } else {
+                // 检查当前线段是否仍然是直线
+                if (segmentStart < i - 1) {
+                    LatLngPoint segStart = waypoints.get(segmentStart);
+                    LatLngPoint segEnd = current;
+                    
+                    // 检查中间点是否都在直线上
+                    boolean isStillStraight = true;
+                    for (int j = segmentStart + 1; j < i; j++) {
+                        double deviation = calculatePointToLineDistance(waypoints.get(j), segStart, segEnd);
+                        // 使用适中的距离阈值判断
+                        if (deviation > 3.0) { // 3米的偏差阈值
+                            isStillStraight = false;
+                            break;
+                        }
+                    }
+                    
+                    if (!isStillStraight) {
+                        // 线段不再是直线，添加前一个点作为线段终点
+                        optimized.add(waypoints.get(i - 1));
+                        segmentStart = i - 1;
+                    }
+                }
+            }
+        }
+        
+        // 简化最后线段的处理：只添加最后一个点，不添加倒数第二个点
+        optimized.add(waypoints.get(waypoints.size() - 1));
+        
+        return optimized;
+    }
+    
+    /**
+     * 使用默认参数的优化方法
+     */
+    public static List<LatLngPoint> optimizeWaypoints(List<LatLngPoint> waypoints) {
+        return optimizeWaypoints(waypoints, 2.0, 10.0); // 2度角度容差，10米最小线段长度
+    }
+    
+    /**
+     * 计算两个角度之间的最小差值
+     */
+    private static double calculateAngleDifference(double angle1, double angle2) {
+        double diff = Math.abs(angle2 - angle1);
+        if (diff > 180) {
+            diff = 360 - diff;
+        }
+        return diff;
+    }
+    
+    /**
+     * 计算点到直线的距离（米）
+     */
+    private static double calculatePointToLineDistance(LatLngPoint point, LatLngPoint lineStart, LatLngPoint lineEnd) {
+        // 使用向量叉积计算点到直线的距离
+        double A = point.latitude - lineStart.latitude;
+        double B = point.longitude - lineStart.longitude;
+        double C = lineEnd.latitude - lineStart.latitude;
+        double D = lineEnd.longitude - lineStart.longitude;
+        
+        double dot = A * C + B * D;
+        double lenSq = C * C + D * D;
+        
+        if (lenSq == 0) {
+            return calculateDistance(point, lineStart);
+        }
+        
+        double param = dot / lenSq;
+        
+        LatLngPoint projection;
+        if (param < 0) {
+            projection = lineStart;
+        } else if (param > 1) {
+            projection = lineEnd;
+        } else {
+            projection = new LatLngPoint(
+                lineStart.latitude + param * C,
+                lineStart.longitude + param * D
+            );
+        }
+        
+        return calculateDistance(point, projection);
+    }
+    
+    /**
+     * 计算线段的总长度
+     */
+    private static double calculateSegmentLength(List<LatLngPoint> waypoints, int startIndex, int endIndex) {
+        double totalLength = 0;
+        for (int i = startIndex; i < endIndex; i++) {
+            totalLength += calculateDistance(waypoints.get(i), waypoints.get(i + 1));
+        }
+        return totalLength;
+    }
+    
+    /**
+     * 计算两点之间的方位角（度）- 改进版本
+     */
+    private static double calculateBearing(LatLngPoint from, LatLngPoint to) {
+        double lat1 = Math.toRadians(from.latitude);
+        double lat2 = Math.toRadians(to.latitude);
+        double deltaLng = Math.toRadians(to.longitude - from.longitude);
+        
+        double y = Math.sin(deltaLng) * Math.cos(lat2);
+        double x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLng);
+        
+        double bearing = Math.atan2(y, x);
+        return (Math.toDegrees(bearing) + 360) % 360;
+    }
+
     public static void main(String[] args) {
-        double sensorWidth = 17.3;
-        double sensorHeight = 13;
+        double sensorWidth = 18;
+        double sensorHeight = 13.5;
         double height = 120;
         double focalLength = 24;
-        int imageWidth = 2000;
-
+        int imageWidth = 1200;
+        double v = calculateHeightFromGSD(7, sensorWidth, focalLength, imageWidth);
+        System.out.println("v = " + v);
         double gsd = calculateGSD(sensorWidth, height, focalLength, imageWidth);
+//        double gsd = 7;
         System.out.println("gsd = " + gsd);
         double flightHeight = calculateFlightHeight(gsd, focalLength, imageWidth, sensorWidth);
 
