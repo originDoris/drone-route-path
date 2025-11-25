@@ -251,5 +251,9 @@ com.origindoris.drone.RoutePathPlanner.planRouteWithMultipleBlocks
 com.origindoris.drone.RoutePathPlanner.planRoute
 ```
 
+有问题可以加我微信讨论
+![e17f59ee4f54484db5f7274ab6e63799](https://github.com/user-attachments/assets/775fba35-5a8f-424c-b716-b48f3ee120ab)
+
+
 本算法库为无人机自动化作业提供了专业、高效、可靠的路径规划解决方案。
         
