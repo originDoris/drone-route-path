@@ -3,6 +3,7 @@ package com.origindoris.drone;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.EqualsAndHashCode;
 
 import java.io.Serializable;
 
@@ -13,6 +14,7 @@ import java.io.Serializable;
  * @date 2025/7/10 13:11
  */
 @Data
+@EqualsAndHashCode(of = {"latitude", "longitude"})
 @AllArgsConstructor
 @NoArgsConstructor
 public class LatLngPoint implements Serializable {

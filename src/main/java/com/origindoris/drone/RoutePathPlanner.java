@@ -21,46 +21,56 @@ public class RoutePathPlanner {
         public List<LatLngPoint> waypoints;  // 航点列表
         public double totalDistance;        // 总距离（米）
         public int totalLines;              // 总航线数
-        
+
+        public int totalPoints;
+
         public RouteResult() {}
-        
-        public RouteResult(List<LatLngPoint> waypoints, double totalDistance, int totalLines) {
+
+        public RouteResult(List<LatLngPoint> waypoints, double totalDistance, int totalLines, int totalPoints) {
             this.waypoints = waypoints;
             this.totalDistance = totalDistance;
             this.totalLines = totalLines;
+            this.totalPoints = totalPoints;
         }
     }
 
     private static final double EARTH_RADIUS = 6371000; // 地球半径（米）
-    
+
     // 性能优化：距离计算缓存
-    private static final Map<String, Double> distanceCache = new ConcurrentHashMap<>();
+    private static final Map<String, Double> distanceCache = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<String, Double>(16384, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Double> eldest) {
+                    return this.size() > MAX_CACHE_SIZE;
+                }
+            }
+    );
     private static final int MAX_CACHE_SIZE = 10000;
-    
+
     // 性能优化：预计算的三角函数值缓存
     private static final Map<String, Double> trigCache = new ConcurrentHashMap<>();
-    
+
     // 新增性能优化缓存
     private static final Map<String, Boolean> pointInPolygonCache = new ConcurrentHashMap<>();
     private static final Map<String, List<LatLngPoint>> intersectionCache = new ConcurrentHashMap<>();
     private static final Map<String, LatLngPoint[]> boundsCache = new ConcurrentHashMap<>();
-    
+
     // 缓存清理阈值
     private static final int CACHE_SIZE_THRESHOLD = 10000;
     private static final long CACHE_CLEANUP_INTERVAL = 300000; // 5分钟
     private static long lastCacheCleanup = System.currentTimeMillis();
-    
+
     // 性能监控
     private static long totalPlanningTime = 0;
     private static int planningCount = 0;
-    
+
     /**
      * 获取平均规划时间（毫秒）
      */
     public static double getAveragePlanningTime() {
         return planningCount > 0 ? (double) totalPlanningTime / planningCount : 0;
     }
-    
+
     /**
      * 重置性能统计
      */
@@ -74,16 +84,16 @@ public class RoutePathPlanner {
         boundsCache.clear();
         lastCacheCleanup = System.currentTimeMillis();
     }
-    
+
     /**
      * 自动清理缓存以防止内存溢出
      */
     private static void cleanupCachesIfNeeded() {
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastCacheCleanup > CACHE_CLEANUP_INTERVAL ||
-            distanceCache.size() > CACHE_SIZE_THRESHOLD ||
-            pointInPolygonCache.size() > CACHE_SIZE_THRESHOLD) {
-            
+                distanceCache.size() > CACHE_SIZE_THRESHOLD ||
+                pointInPolygonCache.size() > CACHE_SIZE_THRESHOLD) {
+
             // 清理最老的缓存项（简单策略：清理一半）
             if (distanceCache.size() > CACHE_SIZE_THRESHOLD / 2) {
                 distanceCache.clear();
@@ -97,7 +107,7 @@ public class RoutePathPlanner {
             if (boundsCache.size() > CACHE_SIZE_THRESHOLD / 2) {
                 boundsCache.clear();
             }
-            
+
             lastCacheCleanup = currentTime;
         }
     }
@@ -125,7 +135,7 @@ public class RoutePathPlanner {
 
         // 性能监控：记录开始时间
         long startTime = System.currentTimeMillis();
-        
+
         try {
             if (polygonPoints == null || polygonPoints.size() < 3) {
                 throw new RuntimeException("多边形至少需要3个顶点");
@@ -198,15 +208,15 @@ public class RoutePathPlanner {
             if (waypointDensity > expectedDensity * 1.5) {
                 validatedRoute = validateWaypointSpacing(optimizedRoute, new ArrayList<>(), pointSpacing);
             }
-            
+
             // 新增：航点优化 - 合并同一直线上的冗余航点
 //            List<LatLngPoint> finalOptimizedRoute = optimizeWaypoints(validatedRoute);
 
             // 计算总距离
             double totalDistance = calculateTotalDistance(validatedRoute);
 
-            return new RouteResult(validatedRoute, totalDistance, lines.size());
-        
+            return new RouteResult(validatedRoute, totalDistance, lines.size(), validatedRoute.size());
+
         } finally {
             // 性能监控：记录结束时间
             long endTime = System.currentTimeMillis();
@@ -279,7 +289,7 @@ public class RoutePathPlanner {
 
             RouteResult bestBlockResult = null;
             if (!supplementaryWaypoints.isEmpty()) {
-                bestBlockResult = new RouteResult(supplementaryWaypoints, 0, supplementaryWaypoints.size() - 1);
+                bestBlockResult = new RouteResult(supplementaryWaypoints, 0, supplementaryWaypoints.size() - 1, supplementaryWaypoints.size());
             }
 
             if (bestBlockResult != null && !bestBlockResult.waypoints.isEmpty()) {
@@ -312,11 +322,12 @@ public class RoutePathPlanner {
         List<LatLngPoint> finalCleanedWaypoints = cleanupInvalidConnections(allWaypoints, polygonPoints);
 
         if (optimize) {
+
             // 新增：航点优化 - 合并同一直线上的冗余航点
             finalCleanedWaypoints = optimizeWaypoints(finalCleanedWaypoints);
         }
 
-        return new RouteResult(finalCleanedWaypoints, totalDistance, totalLines);
+        return new RouteResult(finalCleanedWaypoints, totalDistance, totalLines, finalCleanedWaypoints.size());
     }
 
     /**
@@ -338,7 +349,7 @@ public class RoutePathPlanner {
         // 智能自适应网格采样：根据多边形面积动态调整
         double polygonArea = calculatePolygonArea(originalPolygon);
         double baseGridSize = Math.min(photoWidth, photoLength);
-        
+
         // 根据面积自适应调整网格大小
         double adaptiveGridSize;
         if (polygonArea < 10000) { // 小于1公顷
@@ -348,15 +359,15 @@ public class RoutePathPlanner {
         } else {
             adaptiveGridSize = baseGridSize * 0.5; // 大面积使用粗采样
         }
-        
+
         double latStep = adaptiveGridSize / 111000.0;
         double lngStep = adaptiveGridSize / (111000.0 * Math.cos(Math.toRadians((minBound.latitude + maxBound.latitude) / 2)));
-        
+
         // 动态限制采样点数量
         int maxSamples = Math.min(1500, Math.max(200, (int)(polygonArea / 100))); // 根据面积动态调整
-        double estimatedSamples = ((maxBound.latitude - minBound.latitude) / latStep) * 
-                                 ((maxBound.longitude - minBound.longitude) / lngStep);
-        
+        double estimatedSamples = ((maxBound.latitude - minBound.latitude) / latStep) *
+                ((maxBound.longitude - minBound.longitude) / lngStep);
+
         if (estimatedSamples > maxSamples) {
             double scaleFactor = Math.sqrt(estimatedSamples / maxSamples);
             latStep *= scaleFactor;
@@ -373,25 +384,31 @@ public class RoutePathPlanner {
                 gridPoints.add(new LatLngPoint(lat, lng));
             }
         }
-        
+
         totalSamples = gridPoints.size();
         double coverageRadius = Math.max(photoWidth, photoLength) * 0.25;
-        
+
         // 并行处理网格点
-        List<LatLngPoint> validGridPoints = gridPoints.parallelStream()
+        java.util.stream.Stream<LatLngPoint> gridStream = gridPoints.size() > 1000
+                ? gridPoints.parallelStream()
+                : gridPoints.stream();
+        List<LatLngPoint> validGridPoints = gridStream
                 .filter(gridPoint -> isPointInPolygon(gridPoint, originalPolygon))
                 .collect(Collectors.toList());
-        
+
         polygonInteriorSamples = validGridPoints.size();
-        
-        uncoveredPoints = validGridPoints.parallelStream()
+
+        java.util.stream.Stream<LatLngPoint> validStream = validGridPoints.size() > 1000
+                ? validGridPoints.parallelStream()
+                : validGridPoints.stream();
+        uncoveredPoints = validStream
                 .filter(gridPoint -> {
                     // 检查网格点是否被现有航点覆盖
                     return existingWaypoints.stream()
                             .noneMatch(waypoint -> calculateDistance(gridPoint, waypoint) <= coverageRadius);
                 })
                 .collect(Collectors.toList());
-        
+
         uncoveredSamples = uncoveredPoints.size();
 
         double coverageRate = polygonInteriorSamples > 0 ?
@@ -421,7 +438,7 @@ public class RoutePathPlanner {
     /**
      * 计算地面采样距离(GSD)
      * 使用GSD公式：GSD = (传感器宽度 × 飞行高度) / (焦距 × 图像宽度)
-     * 
+     *
      * @param sensorWidth 传感器宽度（毫米）
      * @param height 飞行高度（米）
      * @param focalLength 焦距（毫米）
@@ -432,7 +449,7 @@ public class RoutePathPlanner {
         if (sensorWidth <= 0 || height <= 0 || focalLength <= 0 || imageWidth <= 0) {
             throw new IllegalArgumentException("传感器宽度、飞行高度、焦距和图像宽度必须大于0");
         }
-        
+
         // GSD = (传感器宽度 × 飞行高度) / (焦距 × 图像宽度)
         return (sensorWidth * height) / (focalLength * imageWidth);
     }
@@ -454,11 +471,11 @@ public class RoutePathPlanner {
         // 高度 = (GSD × 焦距 × 图像宽度) / 传感器宽度
         return (gsd * focalLength * imageWidth) / sensorWidth;
     }
-    
+
     /**
      * 计算飞行高度
      * 使用GSD公式：高度 = (GSD × 焦距 × 图像宽度) / 传感器宽度
-     * 
+     *
      * @param gsd 地面采样距离（米）
      * @param focalLength 焦距（毫米）
      * @param imageWidth 图像宽度（像素）
@@ -469,15 +486,15 @@ public class RoutePathPlanner {
         if (sensorWidth <= 0 || focalLength <= 0 || imageWidth <= 0) {
             throw new IllegalArgumentException("传感器宽度、焦距和图像宽度必须大于0");
         }
-        
+
         // 高度 = (GSD × 焦距 × 图像宽度) / 传感器宽度
         return (gsd * focalLength * imageWidth) / sensorWidth;
     }
-    
+
     /**
      * 计算单张照片覆盖宽度
      * 公式：单张照片覆盖宽度 = (传感器宽度 × 高度) / 焦距
-     * 
+     *
      * @param sensorWidth 传感器宽度（毫米）
      * @param height 飞行高度（米）
      * @param focalLength 焦距（毫米）
@@ -487,15 +504,15 @@ public class RoutePathPlanner {
         if (sensorWidth <= 0 || height <= 0 || focalLength <= 0) {
             throw new IllegalArgumentException("传感器宽度、飞行高度和焦距必须大于0");
         }
-        
+
         // 单张照片覆盖宽度 = (传感器宽度 × 高度) / 焦距
         return (sensorWidth * height) / focalLength;
     }
-    
+
     /**
      * 计算单张照片覆盖长度
      * 公式：单张照片覆盖长度 = (传感器高度 × 高度) / 焦距
-     * 
+     *
      * @param sensorHeight 传感器高度（毫米）
      * @param height 飞行高度（米）
      * @param focalLength 焦距（毫米）
@@ -505,7 +522,7 @@ public class RoutePathPlanner {
         if (sensorHeight <= 0 || height <= 0 || focalLength <= 0) {
             throw new IllegalArgumentException("传感器高度、飞行高度和焦距必须大于0");
         }
-        
+
         // 单张照片覆盖长度 = (传感器高度 × 高度) / 焦距
         return (sensorHeight * height) / focalLength;
     }
@@ -533,7 +550,7 @@ public class RoutePathPlanner {
             List<LatLngPoint> bridgePath = findNonIntersectingBridgePath(
                     lastExistingPoint, firstNewPoint, polygon, existingRoute);
 
-            if (bridgePath != null && !bridgePath.isEmpty()) {
+            if (!bridgePath.isEmpty()) {
                 connectedSegment.addAll(bridgePath);
                 connectedSegment.addAll(newSegment.subList(1, newSegment.size()));
             } else {
@@ -554,12 +571,11 @@ public class RoutePathPlanner {
             return 0;
         }
 
-        LatLngPoint lastExisting = existingRoute.get(existingRoute.size() - newSegment.size() - 1);
+        LatLngPoint lastExisting = existingRoute.get(existingRoute.size() - 1);
         LatLngPoint firstNew = newSegment.get(0);
 
         return calculateDistance(lastExisting, firstNew);
     }
-
 
 
     /**
@@ -568,13 +584,13 @@ public class RoutePathPlanner {
     private static LatLngPoint[] getBounds(List<LatLngPoint> polygon) {
         // 生成缓存键
         String cacheKey = String.valueOf(polygon.hashCode());
-        
+
         // 检查缓存
         LatLngPoint[] cached = boundsCache.get(cacheKey);
         if (cached != null) {
             return cached;
         }
-        
+
         double minLat = Double.MAX_VALUE, maxLat = Double.MIN_VALUE;
         double minLng = Double.MAX_VALUE, maxLng = Double.MIN_VALUE;
 
@@ -586,10 +602,10 @@ public class RoutePathPlanner {
         }
 
         LatLngPoint[] result = new LatLngPoint[]{new LatLngPoint(minLat, minLng), new LatLngPoint(maxLat, maxLng)};
-        
+
         // 存储到缓存
         boundsCache.put(cacheKey, result);
-        
+
         return result;
     }
 
@@ -600,14 +616,14 @@ public class RoutePathPlanner {
         if (polygon.size() < 3) {
             return false;
         }
-        
+
         // 缓存清理
         cleanupCachesIfNeeded();
-        
+
         // 生成缓存键
-        String cacheKey = String.format("%.8f,%.8f,%d", 
-            point.latitude, point.longitude, polygon.hashCode());
-        
+        String cacheKey = String.format("%.8f,%.8f,%d",
+                point.latitude, point.longitude, polygon.hashCode());
+
         // 检查缓存
         Boolean cached = pointInPolygonCache.get(cacheKey);
         if (cached != null) {
@@ -649,10 +665,10 @@ public class RoutePathPlanner {
         }
 
         boolean result = (intersections % 2) == 1;
-        
+
         // 存储到缓存
         pointInPolygonCache.put(cacheKey, result);
-        
+
         return result;
     }
 
@@ -668,7 +684,7 @@ public class RoutePathPlanner {
         // 优化：减少采样点数量，提高性能
         double lineLength = calculateDistance(start, end);
         int sampleCount = Math.max(3, Math.min(15, (int)(lineLength / 50))); // 动态采样点数量，最多15个
-        
+
         for (int i = 1; i < sampleCount; i++) {
             double ratio = (double) i / sampleCount;
             LatLngPoint samplePoint = interpolatePoint(start, end, ratio);
@@ -703,7 +719,7 @@ public class RoutePathPlanner {
         // 大幅减少采样点数量，基于线段长度动态调整
         double lineLength = calculateDistance(start, end);
         int sampleCount = Math.max(2, Math.min(8, (int)(lineLength / 100))); // 最多8个采样点
-        
+
         for (int i = 1; i < sampleCount; i++) {
             double ratio = (double) i / sampleCount;
             LatLngPoint samplePoint = interpolatePoint(start, end, ratio);
@@ -946,30 +962,30 @@ public class RoutePathPlanner {
 
         // 使用重心作为基准点，而不是entryPoint
         LatLngPoint basePoint = isPointInPolygon(entryPoint, polygon) ? entryPoint : center;
-        
+
         // 性能优化：动态计算最大航线数，避免过度生成
         int maxLines = Math.min(100, Math.max(20, (int)(maxDimension / lineSpacing) + 10)); // 动态调整最大航线数
-        
+
         // 多线程并行生成航线
         List<Integer> lineIndices = IntStream.rangeClosed(-maxLines/2, maxLines/2)
                 .boxed().collect(Collectors.toList());
-        
+
         List<List<LatLngPoint>> parallelLines = lineIndices.parallelStream()
                 .map(i -> {
                     double offsetDistance = i * lineSpacing;
-                    
+
                     // 计算航线起点和终点，进一步扩大范围
                     LatLngPoint lineStart = offsetPoint(basePoint, perpDirRad, offsetDistance);
                     lineStart = offsetPoint(lineStart, directionRad, -maxDimension * 2.0);
-                    
+
                     LatLngPoint lineEnd = offsetPoint(lineStart, directionRad, 4 * maxDimension);
-                    
+
                     // 生成该航线上的航点
                     return generateLinePoints(polygon, lineStart, lineEnd, directionRad, pointSpacing);
                 })
                 .filter(linePoints -> !linePoints.isEmpty())
                 .collect(Collectors.toList());
-        
+
         lines.addAll(parallelLines);
         int validLineCount = parallelLines.size();
 
@@ -1158,15 +1174,15 @@ public class RoutePathPlanner {
      */
     private static List<LatLngPoint> findLinePolygonIntersections(LatLngPoint lineStart, LatLngPoint lineEnd, List<LatLngPoint> polygon) {
         // 生成缓存键
-        String cacheKey = String.format("%.6f,%.6f,%.6f,%.6f,%d", 
-            lineStart.latitude, lineStart.longitude, lineEnd.latitude, lineEnd.longitude, polygon.hashCode());
-        
+        String cacheKey = String.format("%.6f,%.6f,%.6f,%.6f,%d",
+                lineStart.latitude, lineStart.longitude, lineEnd.latitude, lineEnd.longitude, polygon.hashCode());
+
         // 检查缓存
         List<LatLngPoint> cached = intersectionCache.get(cacheKey);
         if (cached != null) {
             return new ArrayList<>(cached); // 返回副本避免修改缓存
         }
-        
+
         List<LatLngPoint> intersections = new ArrayList<>();
         int n = polygon.size();
 
@@ -1179,7 +1195,7 @@ public class RoutePathPlanner {
                 intersections.add(intersection);
             }
         }
-        
+
         // 存储到缓存
         intersectionCache.put(cacheKey, new ArrayList<>(intersections));
 
@@ -1537,31 +1553,31 @@ public class RoutePathPlanner {
      */
     private static double calculateDistance(LatLngPoint p1, LatLngPoint p2) {
         // 生成缓存键
-        String cacheKey = String.format("%.6f,%.6f-%.6f,%.6f", 
-            p1.latitude, p1.longitude, p2.latitude, p2.longitude);
-        
+        String cacheKey = String.format("%.6f,%.6f-%.6f,%.6f",
+                p1.latitude, p1.longitude, p2.latitude, p2.longitude);
+
         // 检查缓存
         Double cachedDistance = distanceCache.get(cacheKey);
         if (cachedDistance != null) {
             return cachedDistance;
         }
-        
+
         // 对于非常近的点，使用简化计算
         double deltaLat = Math.abs(p2.latitude - p1.latitude);
         double deltaLng = Math.abs(p2.longitude - p1.longitude);
-        
+
         if (deltaLat < 0.0001 && deltaLng < 0.0001) {
             // 使用平面距离近似计算（适用于很近的点）
             double latAvg = Math.toRadians((p1.latitude + p2.latitude) / 2);
             double x = Math.toRadians(deltaLng) * Math.cos(latAvg);
             double y = Math.toRadians(deltaLat);
             double distance = Math.sqrt(x * x + y * y) * EARTH_RADIUS;
-            
+
             // 缓存结果
             cacheDistance(cacheKey, distance);
             return distance;
         }
-        
+
         // 使用Haversine公式计算精确距离
         double lat1Rad = Math.toRadians(p1.latitude);
         double lat2Rad = Math.toRadians(p2.latitude);
@@ -1574,21 +1590,16 @@ public class RoutePathPlanner {
 
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         double distance = EARTH_RADIUS * c;
-        
+
         // 缓存结果
         cacheDistance(cacheKey, distance);
         return distance;
     }
-    
+
     /**
      * 缓存距离计算结果（优化版本）
      */
     private static void cacheDistance(String key, double distance) {
-        // 使用更高效的缓存清理策略
-        if (distanceCache.size() >= MAX_CACHE_SIZE) {
-            // 清理缓存，保留最近使用的
-            distanceCache.clear();
-        }
         distanceCache.put(key, distance);
     }
 
@@ -1603,25 +1614,6 @@ public class RoutePathPlanner {
         return totalDistance;
     }
 
-    /**
-     * 将航点列表转换为JSON字符串
-     * @param waypoints 航点列表
-     * @return JSON字符串
-     */
-    public static String toJson(List<LatLngPoint> waypoints){
-        StringBuilder json = new StringBuilder();
-        json.append("[");
-        for (int i = 0; i < waypoints.size(); i++) {
-            if (i > 0) {
-                json.append(",");
-            }
-            LatLngPoint point = waypoints.get(i);
-            json.append(String.format("{\"latitude\":%.8f,\"longitude\":%.8f}",
-                    point.latitude, point.longitude));
-        }
-        json.append("]");
-        return json.toString();
-    }
 
     /**
      * 找到多边形边界上距离给定点最近的点
@@ -1959,28 +1951,50 @@ public class RoutePathPlanner {
     }
 
     private static List<LatLngPoint> calculateConvexHull(List<LatLngPoint> points) {
-        // 简化的凸包算法（Graham扫描法）
-        if (points.size() < 3) {
+        if (points.size() <= 1) {
             return new ArrayList<>(points);
         }
+        List<LatLngPoint> pts = new ArrayList<>(points);
+        pts.sort(Comparator.comparingDouble((LatLngPoint p) -> p.longitude)
+                .thenComparingDouble(p -> p.latitude));
 
-        // 找到最下方的点
-        LatLngPoint bottom = points.get(0);
-        for (LatLngPoint point : points) {
-            if (point.latitude < bottom.latitude ||
-                    (point.latitude == bottom.latitude && point.longitude < bottom.longitude)) {
-                bottom = point;
+        List<LatLngPoint> lower = new ArrayList<>();
+        for (LatLngPoint p : pts) {
+            while (lower.size() >= 2) {
+                LatLngPoint a = lower.get(lower.size() - 2);
+                LatLngPoint b = lower.get(lower.size() - 1);
+                double cross = (b.longitude - a.longitude) * (p.latitude - a.latitude)
+                        - (b.latitude - a.latitude) * (p.longitude - a.longitude);
+                if (cross <= 0) {
+                    lower.remove(lower.size() - 1);
+                } else {
+                    break;
+                }
             }
+            lower.add(p);
         }
 
-        // 简化实现：返回边界框的四个角点
-        LatLngPoint[] bounds = getBounds(points);
-        List<LatLngPoint> hull = new ArrayList<>();
-        hull.add(bounds[0]);
-        hull.add(new LatLngPoint(bounds[0].latitude, bounds[1].longitude));
-        hull.add(bounds[1]);
-        hull.add(new LatLngPoint(bounds[1].latitude, bounds[0].longitude));
+        List<LatLngPoint> upper = new ArrayList<>();
+        for (int i = pts.size() - 1; i >= 0; i--) {
+            LatLngPoint p = pts.get(i);
+            while (upper.size() >= 2) {
+                LatLngPoint a = upper.get(upper.size() - 2);
+                LatLngPoint b = upper.get(upper.size() - 1);
+                double cross = (b.longitude - a.longitude) * (p.latitude - a.latitude)
+                        - (b.latitude - a.latitude) * (p.longitude - a.longitude);
+                if (cross <= 0) {
+                    upper.remove(upper.size() - 1);
+                } else {
+                    break;
+                }
+            }
+            upper.add(p);
+        }
 
+        lower.remove(lower.size() - 1);
+        upper.remove(upper.size() - 1);
+        List<LatLngPoint> hull = new ArrayList<>(lower);
+        hull.addAll(upper);
         return hull;
     }
 
@@ -2091,22 +2105,22 @@ public class RoutePathPlanner {
                                                                            double clusterRadius,
                                                                            double lineSpacing) {
         List<List<LatLngPoint>> clusters = new ArrayList<>();
-        
+
         if (uncoveredPoints.isEmpty()) {
             return clusters;
         }
-        
+
         // 使用空间网格优化邻近点查找
         Map<String, List<Integer>> spatialGrid = new HashMap<>();
         double gridSize = clusterRadius;
-        
+
         // 将点分配到网格中
         for (int i = 0; i < uncoveredPoints.size(); i++) {
             LatLngPoint point = uncoveredPoints.get(i);
             String gridKey = getGridKey(point, gridSize);
             spatialGrid.computeIfAbsent(gridKey, k -> new ArrayList<>()).add(i);
         }
-        
+
         boolean[] visited = new boolean[uncoveredPoints.size()];
 
         for (int i = 0; i < uncoveredPoints.size(); i++) {
@@ -2122,12 +2136,12 @@ public class RoutePathPlanner {
             while (!queue.isEmpty()) {
                 int current = queue.poll();
                 cluster.add(uncoveredPoints.get(current));
-                
+
                 LatLngPoint currentPoint = uncoveredPoints.get(current);
-                
+
                 // 只检查邻近网格中的点
                 Set<Integer> nearbyPoints = getNearbyPointsFromGrid(currentPoint, spatialGrid, gridSize);
-                
+
                 for (int j : nearbyPoints) {
                     if (!visited[j]) {
                         double distance = calculateDistance(currentPoint, uncoveredPoints.get(j));
@@ -2146,7 +2160,7 @@ public class RoutePathPlanner {
 
         return clusters;
     }
-    
+
     /**
      * 获取点的网格键
      */
@@ -2155,16 +2169,16 @@ public class RoutePathPlanner {
         double lngGrid = Math.floor(point.longitude * 111000.0 / gridSize);
         return latGrid + "," + lngGrid;
     }
-    
+
     /**
      * 从空间网格中获取邻近点
      */
     private static Set<Integer> getNearbyPointsFromGrid(LatLngPoint point, Map<String, List<Integer>> spatialGrid, double gridSize) {
         Set<Integer> nearbyPoints = new HashSet<>();
-        
+
         double latGrid = Math.floor(point.latitude * 111000.0 / gridSize);
         double lngGrid = Math.floor(point.longitude * 111000.0 / gridSize);
-        
+
         // 检查当前网格和8个邻近网格
         for (int dLat = -1; dLat <= 1; dLat++) {
             for (int dLng = -1; dLng <= 1; dLng++) {
@@ -2175,7 +2189,7 @@ public class RoutePathPlanner {
                 }
             }
         }
-        
+
         return nearbyPoints;
     }
 
@@ -2216,7 +2230,6 @@ public class RoutePathPlanner {
         // 调整间距要求：保持合理的最小间距，但不过于严格
         double minDistance = pointSpacing * 0.75; // 最小间距：75%的标准间距（放宽要求）
         int rejectedTooClose = 0;
-        int acceptedCount = 0;
 
         for (LatLngPoint waypoint : waypoints) {
             boolean validSpacing = true;
@@ -2237,12 +2250,11 @@ public class RoutePathPlanner {
             if (validSpacing) {
                 validatedWaypoints.add(waypoint);
                 allExistingPoints.add(waypoint); // 添加到现有点列表中，用于后续验证
-                acceptedCount++;
             }
         }
 
         // 如果拒绝率过高，给出警告
-        double rejectionRate = waypoints.size() > 0 ? (double)rejectedTooClose / waypoints.size() : 0;
+        double rejectionRate = !waypoints.isEmpty() ? (double)rejectedTooClose / waypoints.size() : 0;
         if (rejectionRate > 0.3) {
             System.out.println("警告: 航点拒绝率较高 (" + String.format("%.1f%%", rejectionRate * 100) + ")，可能需要调整间距参数");
         }
@@ -2364,7 +2376,6 @@ public class RoutePathPlanner {
 
         // 使用更宽松的航线数量计算
         int maxLines = Math.max(3, (int)(maxDimension / lineSpacing) + 4);
-        int validLineCount = 0;
 
 
         // 生成自适应平行航线
@@ -2395,7 +2406,6 @@ public class RoutePathPlanner {
 
             if (!linePoints.isEmpty() && coversTarget) {
                 lines.add(linePoints);
-                validLineCount++;
             }
         }
 
@@ -2657,11 +2667,10 @@ public class RoutePathPlanner {
         return Math.abs(area) / 2.0;
     }
 
-
     /**
      * 优化航点序列：合并同一直线上的冗余航点，正确处理航线转弯
      * 时间复杂度：O(n)
-     * 
+     *
      * @param waypoints 原始航点序列
      * @param toleranceAngle 角度容差（度），用于判断是否为同一直线，默认2度
      * @param minSegmentLength 最小线段长度（米），短于此长度的线段不进行优化
@@ -2671,47 +2680,45 @@ public class RoutePathPlanner {
         if (waypoints == null || waypoints.size() <= 2) {
             return new ArrayList<>(waypoints);
         }
-        
+
         List<LatLngPoint> optimized = new ArrayList<>();
         optimized.add(waypoints.get(0)); // 添加起始点
-        
+
         int segmentStart = 0;
-        
+
         for (int i = 1; i < waypoints.size() - 1; i++) {
             LatLngPoint current = waypoints.get(i);
             LatLngPoint next = waypoints.get(i + 1);
-            
+
             // 检查是否为真正的航线转弯点
             boolean isTurningPoint = false;
-            
-            if (i >= 1) {
-                LatLngPoint prev = waypoints.get(i - 1);
-                
-                // 计算当前段和下一段的方向
-                double bearing1 = calculateBearing(prev, current);
-                double bearing2 = calculateBearing(current, next);
-                
-                // 计算方向变化
-                double angleChange = calculateAngleDifference(bearing1, bearing2);
-                
-                // 只有当角度变化超过较大阈值时才认为是转弯点
-                if (angleChange > toleranceAngle * 5) { // 提高阈值到5倍容差
+
+            LatLngPoint prev = waypoints.get(i - 1);
+
+            // 计算当前段和下一段的方向
+            double bearing1 = calculateBearing(prev, current);
+            double bearing2 = calculateBearing(current, next);
+
+            // 计算方向变化
+            double angleChange = calculateAngleDifference(bearing1, bearing2);
+
+            // 只有当角度变化超过较大阈值时才认为是转弯点
+            if (angleChange > toleranceAngle * 5) { // 提高阈值到5倍容差
+                isTurningPoint = true;
+            }
+
+            // 额外检查：距离突然增大的情况（跨航线连接）
+            if (i >= 2) {
+                double dist1 = calculateDistance(waypoints.get(i-2), waypoints.get(i-1));
+                double dist2 = calculateDistance(waypoints.get(i-1), current);
+                double dist3 = calculateDistance(current, next);
+
+                // 如果当前距离明显大于前后距离，说明是跨航线连接
+                if (dist2 > Math.max(dist1, dist3) * 3.0) {
                     isTurningPoint = true;
                 }
-                
-                // 额外检查：距离突然增大的情况（跨航线连接）
-                if (i >= 2) {
-                    double dist1 = calculateDistance(waypoints.get(i-2), waypoints.get(i-1));
-                    double dist2 = calculateDistance(waypoints.get(i-1), current);
-                    double dist3 = calculateDistance(current, next);
-                    
-                    // 如果当前距离明显大于前后距离，说明是跨航线连接
-                    if (dist2 > Math.max(dist1, dist3) * 3.0) {
-                        isTurningPoint = true;
-                    }
-                }
             }
-            
+
             // 如果是转弯点，结束当前线段并开始新线段
             if (isTurningPoint) {
                 // 只添加转弯点，不添加额外的中间点
@@ -2722,7 +2729,7 @@ public class RoutePathPlanner {
                 if (segmentStart < i - 1) {
                     LatLngPoint segStart = waypoints.get(segmentStart);
                     LatLngPoint segEnd = current;
-                    
+
                     // 检查中间点是否都在直线上
                     boolean isStillStraight = true;
                     for (int j = segmentStart + 1; j < i; j++) {
@@ -2733,7 +2740,7 @@ public class RoutePathPlanner {
                             break;
                         }
                     }
-                    
+
                     if (!isStillStraight) {
                         // 线段不再是直线，添加前一个点作为线段终点
                         optimized.add(waypoints.get(i - 1));
@@ -2742,20 +2749,20 @@ public class RoutePathPlanner {
                 }
             }
         }
-        
+
         // 简化最后线段的处理：只添加最后一个点，不添加倒数第二个点
         optimized.add(waypoints.get(waypoints.size() - 1));
-        
+
         return optimized;
     }
-    
+
     /**
      * 使用默认参数的优化方法
      */
     public static List<LatLngPoint> optimizeWaypoints(List<LatLngPoint> waypoints) {
         return optimizeWaypoints(waypoints, 2.0, 10.0); // 2度角度容差，10米最小线段长度
     }
-    
+
     /**
      * 计算两个角度之间的最小差值
      */
@@ -2766,7 +2773,7 @@ public class RoutePathPlanner {
         }
         return diff;
     }
-    
+
     /**
      * 计算点到直线的距离（米）
      */
@@ -2776,16 +2783,16 @@ public class RoutePathPlanner {
         double B = point.longitude - lineStart.longitude;
         double C = lineEnd.latitude - lineStart.latitude;
         double D = lineEnd.longitude - lineStart.longitude;
-        
+
         double dot = A * C + B * D;
         double lenSq = C * C + D * D;
-        
+
         if (lenSq == 0) {
             return calculateDistance(point, lineStart);
         }
-        
+
         double param = dot / lenSq;
-        
+
         LatLngPoint projection;
         if (param < 0) {
             projection = lineStart;
@@ -2793,14 +2800,14 @@ public class RoutePathPlanner {
             projection = lineEnd;
         } else {
             projection = new LatLngPoint(
-                lineStart.latitude + param * C,
-                lineStart.longitude + param * D
+                    lineStart.latitude + param * C,
+                    lineStart.longitude + param * D
             );
         }
-        
+
         return calculateDistance(point, projection);
     }
-    
+
     /**
      * 计算线段的总长度
      */
@@ -2811,7 +2818,7 @@ public class RoutePathPlanner {
         }
         return totalLength;
     }
-    
+
     /**
      * 计算两点之间的方位角（度）- 改进版本
      */
@@ -2819,29 +2826,11 @@ public class RoutePathPlanner {
         double lat1 = Math.toRadians(from.latitude);
         double lat2 = Math.toRadians(to.latitude);
         double deltaLng = Math.toRadians(to.longitude - from.longitude);
-        
+
         double y = Math.sin(deltaLng) * Math.cos(lat2);
         double x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLng);
-        
+
         double bearing = Math.atan2(y, x);
         return (Math.toDegrees(bearing) + 360) % 360;
-    }
-
-    public static void main(String[] args) {
-        double sensorWidth = 18;
-        double sensorHeight = 13.5;
-        double height = 120;
-        double focalLength = 24;
-        int imageWidth = 1200;
-        double v = calculateHeightFromGSD(7, sensorWidth, focalLength, imageWidth);
-        System.out.println("v = " + v);
-        double gsd = calculateGSD(sensorWidth, height, focalLength, imageWidth);
-//        double gsd = 7;
-        System.out.println("gsd = " + gsd);
-        double flightHeight = calculateFlightHeight(gsd, focalLength, imageWidth, sensorWidth);
-
-        double photoWidth = calculatePhotoWidth(sensorWidth,flightHeight,focalLength);
-        double photoLength = calculatePhotoLength(sensorHeight, flightHeight, photoWidth);
-        System.out.println("photoLength = " + photoLength);
     }
 }
