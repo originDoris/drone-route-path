@@ -1,6 +1,10 @@
 # drone-route-path
 # 无人机路径规划算法库
 
+有问题可以加我微信讨论
+
+微信：origindoris
+
 ## 项目简介
 
 本项目是一个专业的无人机航线规划算法库，主要用于无人机摄影测量任务的路径规划。项目包含两个核心算法模块：
@@ -238,6 +242,21 @@ RoutePathPlanner.resetPerformanceStats();
 - 农业植保作业规划
 - 地形测绘任务规划
 - 基础设施巡检路径规划
+  
+## 关于规划的航点过于密集的问题
+```java
+// 建议使用该方法进行规划
+// 5航线算法是调用该方法的，会过滤掉冗余航点
+com.origindoris.drone.RoutePathPlanner.planRouteWithMultipleBlocks 
+
+// 如果使用 该方法需要手动打开
+// 新增：航点优化 - 合并同一直线上的冗余航点
+// List<LatLngPoint> finalOptimizedRoute = optimizeWaypoints(validatedRoute);
+com.origindoris.drone.RoutePathPlanner.planRoute
+```
+
+
+
 
 ## 关于规划的航点过于密集的问题
 ```java
@@ -252,4 +271,8 @@ com.origindoris.drone.RoutePathPlanner.planRoute
 ```
 
 本算法库为无人机自动化作业提供了专业、高效、可靠的路径规划解决方案。
-        
+
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=originDoris/drone-route-path&type=date&legend=top-left)](https://www.star-history.com/#originDoris/drone-route-path&type=date&legend=top-left)
