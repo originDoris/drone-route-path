@@ -252,8 +252,12 @@ com.origindoris.drone.RoutePathPlanner.planRoute
 ```
 
 有问题可以加我微信讨论
-![e17f59ee4f54484db5f7274ab6e63799](https://github.com/user-attachments/assets/775fba35-5a8f-424c-b716-b48f3ee120ab)
+微信：origindoris
 
 
 本算法库为无人机自动化作业提供了专业、高效、可靠的路径规划解决方案。
-        
+
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=originDoris/drone-route-path&type=date&legend=top-left)](https://www.star-history.com/#originDoris/drone-route-path&type=date&legend=top-left)
