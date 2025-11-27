@@ -1,6 +1,10 @@
 # drone-route-path
 # 无人机路径规划算法库
 
+有问题可以加我微信讨论
+
+微信：origindoris
+
 ## 项目简介
 
 本项目是一个专业的无人机航线规划算法库，主要用于无人机摄影测量任务的路径规划。项目包含两个核心算法模块：
@@ -251,8 +255,7 @@ com.origindoris.drone.RoutePathPlanner.planRouteWithMultipleBlocks
 com.origindoris.drone.RoutePathPlanner.planRoute
 ```
 
-有问题可以加我微信讨论
-微信：origindoris
+
 
 
 本算法库为无人机自动化作业提供了专业、高效、可靠的路径规划解决方案。
